@@ -261,22 +261,24 @@ class PatchDataset(Dataset):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        img = np.load(self.image_files[idx])  # shape (H, W, 3)
-        mask = np.load(self.mask_files[idx])  # shape (H, W, 1)
+        img = np.load(self.image_files[idx])
+        mask = np.load(self.mask_files[idx])
 
-        # Convert numpy arrays to PIL images if transforms require that.
         img = Image.fromarray(img.astype(np.uint8))
         mask = Image.fromarray(mask.squeeze().astype(np.uint8))  # squeeze out the channel dim for mask
 
         if self.transform:
             img = self.transform(img)
             # For the mask, you might need a separate transform. Here we convert to tensor without normalization.
-            mask = transforms.ToTensor()(mask)
+            mask = np.array(mask, dtype=np.uint8)
+            mask = (mask > 0).astype(np.uint8)
+            mask = torch.from_numpy(mask)
         else:
             img = transforms.ToTensor()(img)
-            mask = transforms.ToTensor()(mask)
+            mask = np.array(mask, dtype=np.uint8)
+            mask = (mask > 0).astype(np.uint8)
+            mask = torch.from_numpy(mask)
 
-        # For segmentation, often masks are expected to be LongTensor with class indices.
         mask = mask.long().squeeze(0)
         return img, mask
 
