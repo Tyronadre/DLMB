@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+
 ########################################
 # Patch Extraction Utility
 ########################################
@@ -35,6 +36,7 @@ def extract_patches(image_array, patch_size, stride):
     # patches.shape = (n_y, n_x, 1, patch_height, patch_width, C); squeeze the extra dim.
     patches = patches.reshape(-1, patch_size[0], patch_size[1], image_array.shape[-1])
     return patches
+
 
 def save_patches(image_dir, mask_dir, out_image_dir, out_mask_dir, patch_size=(256, 256), stride=(256, 256)):
     """
@@ -65,6 +67,7 @@ def save_patches(image_dir, mask_dir, out_image_dir, out_mask_dir, patch_size=(2
             patch_id += 1
     print(f"Saved {patch_id} patches.")
 
+
 ########################################
 # Data Augmentation: Pair Transforms
 ########################################
@@ -82,6 +85,7 @@ class ComposePair:
             image, mask = t(image, mask)
         return image, mask
 
+
 class RandomHorizontalFlipPair:
     def __init__(self, p=0.5):
         self.p = p
@@ -90,6 +94,7 @@ class RandomHorizontalFlipPair:
         if random.random() < self.p:
             return F.hflip(image), F.hflip(mask)
         return image, mask
+
 
 class RandomVerticalFlipPair:
     def __init__(self, p=0.5):
@@ -100,6 +105,7 @@ class RandomVerticalFlipPair:
             return F.vflip(image), F.vflip(mask)
         return image, mask
 
+
 class RandomRotationPair:
     def __init__(self, degrees=30):
         self.degrees = degrees
@@ -109,6 +115,7 @@ class RandomRotationPair:
         # Use bilinear for image and nearest for mask to preserve labels.
         return F.rotate(image, angle), F.rotate(mask, angle)
 
+
 class ColorJitterPair:
     def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
         self.jitter = transforms.ColorJitter(brightness, contrast, saturation, hue)
@@ -116,6 +123,7 @@ class ColorJitterPair:
     def __call__(self, image, mask):
         # Only apply color jitter to image; leave mask intact.
         return self.jitter(image), mask
+
 
 def get_augmentation_transforms(config):
     """
@@ -152,6 +160,7 @@ def get_augmentation_transforms(config):
         # If no augmentation is selected, return identity.
         return lambda image, mask: (image, mask)
 
+
 ########################################
 # Parameterizable UNet Implementation
 ########################################
@@ -173,6 +182,7 @@ class DoubleConv(nn.Module):
 
     def forward(self, x):
         return self.double_conv(x)
+
 
 class UNet(nn.Module):
     """
@@ -233,12 +243,12 @@ class UNet(nn.Module):
             if x.size() != enc_feat.size():
                 diffY = enc_feat.size()[2] - x.size()[2]
                 diffX = enc_feat.size()[3] - x.size()[3]
-                x = F.pad(x, [diffX // 2, diffX - diffX // 2,
-                              diffY // 2, diffY - diffY // 2])
+                x = F.pad(x, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
             x = torch.cat([enc_feat, x], dim=1)
             x = self.decoders[2 * i + 1](x)
 
         return self.final_conv(x)
+
 
 ########################################
 # Integrating Augmentations into the Dataset
@@ -281,6 +291,7 @@ class PatchDataset(Dataset):
 
         mask = mask.long().squeeze(0)
         return img, mask
+
 
 ########################################
 # Training Loop
@@ -328,6 +339,7 @@ def plot_epoch_predictions(model, sample_loader, device, epoch, save_fig=False):
             break  # we only plot one batch (the first) for brevity
     model.train()  # switch back to training mode
 
+
 def train_model_with_epoch_predictions(model, train_loader, sample_loader, criterion, optimizer, device, num_epochs=25):
     model.to(device)
     for epoch in range(num_epochs):
@@ -350,13 +362,18 @@ def train_model_with_epoch_predictions(model, train_loader, sample_loader, crite
         plot_epoch_predictions(model, sample_loader, device, epoch, save_fig=True)
     return model
 
-def train_model(model, train_loader, _, criterion, optimizer, device, num_epochs=25):
+
+def train_model(model, train_loader, criterion, optimizer, device, max_loss):
     model.to(device)
-    for epoch in range(num_epochs):
+    last_5_losses = []
+    stop_training = False
+    loss = 1
+    epoch = 0
+    while loss > max_loss and not stop_training:
         model.train()
         running_loss = 0.0
 
-        for imgs, masks in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}"):
+        for imgs, masks in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
             imgs, masks = imgs.to(device), masks.to(device)
 
             outputs = model(imgs)
@@ -367,12 +384,50 @@ def train_model(model, train_loader, _, criterion, optimizer, device, num_epochs
             loss.backward()
             optimizer.step()
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {running_loss / len(train_loader.dataset):.4f}")
-    return model
+            loss = running_loss / len(train_loader.dataset)
+
+        last_5_losses.append(loss)
+        progress = 0
+        if len(last_5_losses) > 5:
+            last_5_losses.pop(0)
+            for l in range(4):
+                progress += last_5_losses[l] - last_5_losses[l + 1]
+            if progress < max_loss:
+                stop_training = True
+        print(f"Epoch {epoch + 1}, Loss: {loss:.4f} Progress: {progress:.4f}")
+        epoch += 1
+
+    return model, loss
+
 
 ########################################
 # 5. Main Execution
 ########################################
+
+
+def train_model_with_params(depth, base_filters, learning_rate, max_loss=0.01):
+    transform = transforms.Compose([transforms.ToTensor(), ])
+
+    train_image_dir = "data/patches/train_images"
+    train_mask_dir = "data/patches/train_masks"
+    train_dataset = PatchDataset(train_image_dir, train_mask_dir, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    model = UNet(in_channels=3, out_channels=2, depth=depth, base_filters=base_filters)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    model, running_loss = train_model(model, train_loader, criterion, optimizer, device, max_loss)
+
+    # Save the final model.
+    model_name = f"d_{depth}_f_{base_filters}_lr_{learning_rate}.pth"
+    os.makedirs("saved_models", exist_ok=True)
+    torch.save(model.state_dict(), "saved_models/" + model_name)
+    print("Model saved to saved_models/" + model_name)
+
+    return running_loss
 
 
 # Assuming PatchDataset and UNet are defined as in the previous examples.
@@ -390,7 +445,7 @@ def main():
         # }
     }
     transform = get_augmentation_transforms(aug_config)
-    transform = transforms.Compose([        transforms.ToTensor(),    ])
+    transform = transforms.Compose([transforms.ToTensor(), ])
 
     train_image_dir = "data/patches/train_images"
     train_mask_dir = "data/patches/train_masks"
