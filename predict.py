@@ -4,75 +4,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
-from train import PatchDataset
-
-
-# Define your U-Net (or import if it's defined elsewhere)
-class DoubleConv(nn.Module):
-    """(Convolution => BatchNorm => ReLU) * 2"""
-
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        return self.double_conv(x)
-
-
-class UNet(nn.Module):
-    def __init__(self, n_channels=3, n_classes=2):
-        super(UNet, self).__init__()
-
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
-        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
-        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
-        self.down4 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(512, 512))
-
-        self.up1 = nn.ConvTranspose2d(512, 512, kernel_size=2, stride=2)
-        self.conv1 = DoubleConv(1024, 256)
-        self.up2 = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
-        self.conv2 = DoubleConv(512, 128)
-        self.up3 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
-        self.conv3 = DoubleConv(256, 64)
-        self.up4 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
-        self.conv4 = DoubleConv(128, 64)
-        self.outc = nn.Conv2d(64, n_classes, kernel_size=1)
-
-    def forward(self, x):
-        x1 = self.inc(x)  # [B, 64, H, W]
-        x2 = self.down1(x1)  # [B, 128, H/2, W/2]
-        x3 = self.down2(x2)  # [B, 256, H/4, W/4]
-        x4 = self.down3(x3)  # [B, 512, H/8, W/8]
-        x5 = self.down4(x4)  # [B, 512, H/16, W/16]
-
-        x = self.up1(x5)
-        x = torch.cat([x, x4], dim=1)
-        x = self.conv1(x)
-
-        x = self.up2(x)
-        x = torch.cat([x, x3], dim=1)
-        x = self.conv2(x)
-
-        x = self.up3(x)
-        x = torch.cat([x, x2], dim=1)
-        x = self.conv3(x)
-
-        x = self.up4(x)
-        x = torch.cat([x, x1], dim=1)
-        x = self.conv4(x)
-
-        logits = self.outc(x)
-        return logits
-
+from train import PatchDataset, UNet
 
 import torch
 import matplotlib.pyplot as plt
@@ -235,11 +167,11 @@ def main():
 
     # Set device and load the saved model.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(n_channels=3, n_classes=2)
-    model_path = "saved_models/1.pth"
+    model = UNet(in_channels=3, out_channels=2, depth=7, base_filters=16)
+    model_path = "saved_models/3.pth"
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))
-        print("Model loaded successfully.")
+        print("Model " + model_path + " loaded successfully.")
     else:
         print(f"Model path {model_path} does not exist.")
         return

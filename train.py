@@ -389,10 +389,8 @@ def main():
         #     'hue': 0.1
         # }
     }
-    train_transform = get_augmentation_transforms(aug_config)
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
+    transform = get_augmentation_transforms(aug_config)
+    transform = transforms.Compose([        transforms.ToTensor(),    ])
 
     train_image_dir = "data/patches/train_images"
     train_mask_dir = "data/patches/train_masks"
@@ -404,7 +402,7 @@ def main():
     sample_loader = DataLoader(sample_subset, batch_size=4, shuffle=False)
 
     # Initialize the U-Net model.
-    model = UNet(in_channels=3, out_channels=2, depth=4, base_filters=64)
+    model = UNet(in_channels=3, out_channels=2, depth=7, base_filters=16)
 
     # Loss function and optimizer.
     criterion = nn.CrossEntropyLoss()
@@ -415,12 +413,12 @@ def main():
     print(f"Using device: {device}")
 
     # Train the model, plotting predictions at each epoch.
-    num_epochs = 5
+    num_epochs = 50
     model = train_model_with_epoch_predictions(model, train_loader, sample_loader, criterion, optimizer, device,
                                                num_epochs)
 
     # Save the final model.
-    model_name = "2.pth"
+    model_name = "3.pth"
     os.makedirs("saved_models", exist_ok=True)
     torch.save(model.state_dict(), "saved_models/" + model_name)
     print("Model saved to saved_models/" + model_name)
