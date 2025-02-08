@@ -1,15 +1,16 @@
 import glob
+import math
 import os
-import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
-
-from train import PatchDataset, UNet
-
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+import torch.nn.functional as F
+
+from PIL import Image
 from skimage.measure import label, regionprops
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from train import PatchDataset, UNet
 
 
 def count_cells_in_patch(mask, min_area=50):
@@ -35,12 +36,7 @@ def count_cells_in_patch(mask, min_area=50):
     return cell_count
 
 
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-
-
-def plot_predictions(model, dataloader, device, n_images=5, min_area=100, save_fig=False):
+def plot_predictions(model_name, model, dataloader, device, n_images=5, min_area=100, save_fig=False):
     """
     Visualize n images from the dataloader. For each image, show:
       - Original image
@@ -136,6 +132,8 @@ def plot_predictions(model, dataloader, device, n_images=5, min_area=100, save_f
     plt.tight_layout()
     if save_fig:
         plt.savefig("predictions_with_diff.png")
+    # set the title of the plot with the size of the patches
+    plt.suptitle("Image Segmentation Predictions " + model_name + ". Size: " + str(H) + "x" + str(W))
     plt.show()
 
 
@@ -170,49 +168,6 @@ def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
 
     plt.tight_layout()
     plt.show()
-
-
-# ---------------------------
-# Main Execution for Prediction Plotting
-# ---------------------------
-
-def main():
-    # Directories for the test patches.
-    test_patch_image_dir = "data/patches_128/test_images"
-    test_patch_mask_dir = "data/patches_128/test_masks"
-
-    transform = transforms.Compose([transforms.ToTensor()])
-
-    # Create the test dataset and loader.
-    test_dataset = PatchDataset(test_patch_image_dir, test_patch_mask_dir, transform=transform)
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
-
-    # Set device and load the saved model.
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models_path = "saved_models"
-
-    for model_name in os.listdir(models_path):
-        model_path = os.path.join(models_path, model_name)
-        try:
-            if os.path.exists(model_path):
-                # if not model_path.__contains__("d_6"): continue
-                model_data = model_name.split("_")
-                model = UNet(in_channels=3, out_channels=2, depth=int(model_data[1]), base_filters=int(model_data[3]))
-
-                model.load_state_dict(torch.load(model_path, map_location=device))
-                print("Model " + model_path + " loaded successfully.")
-                model.to(device)
-                plot_predictions(model, test_loader, device, n_images=3, save_fig=True)
-        except Exception as e:
-            print(f"Error loading model {model_name}: {e}")
-
-
-import math
-import torch
-import torch.nn.functional as F
-from torchvision import transforms
-from PIL import Image
-import numpy as np
 
 
 def predict_full_image(model, image, patch_size=256, stride=256, device=None):
@@ -372,28 +327,72 @@ def plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_
     plt.tight_layout()
     if save_fig:
         plt.savefig("full_image_predictions.png")
+
+    plt.suptitle("Full Image Predictions")
     plt.show()
     model.train()
 
 
-def predict_full_image_example():
-    model = UNet(in_channels=3, out_channels=2, depth=6, base_filters=32)  # example
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.load_state_dict(torch.load("saved_models/d_6_f_32_lr_0.0001.pth", map_location=device))
-
+def main():
+    # Directories for the test patches.
     test_image_dir = "data/test"
     test_mask_dir = "data/test_masks"
-    image_paths = sorted(
-        [os.path.join(test_image_dir, f) for f in os.listdir(test_image_dir) if f.lower().endswith('.tif')])
-    mask_paths = sorted(
-        [os.path.join(test_mask_dir, f) for f in os.listdir(test_mask_dir) if f.lower().endswith('.tif')])
+    patch_100_image = "data/patches_100/test_images"
+    patch_100_mask = "data/patches_100/test_masks"
+    patch_128_image = "data/patches_128/test_images"
+    patch_128_mask = "data/patches_128/test_masks"
+    patch_256_image = "data/patches_256/test_images"
+    patch_256_mask = "data/patches_256/test_masks"
 
-    # Visualize predictions for the first n_images.
-    n_images_to_show = min(5, len(image_paths))
-    plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256, stride=256,
-                                  n_images=n_images_to_show, save_fig=False)
+    transform = transforms.Compose([transforms.ToTensor()])
+
+    # Create the test dataset and loader.
+    loader_100 = DataLoader(PatchDataset(patch_100_image, patch_100_mask, transform=transform), batch_size=4,
+                            shuffle=False)
+    loader_128 = DataLoader(PatchDataset(patch_128_image, patch_128_mask, transform=transform), batch_size=4,
+                            shuffle=False)
+    loader_256 = DataLoader(PatchDataset(patch_256_image, patch_256_mask, transform=transform), batch_size=4,
+                            shuffle=False)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    models_path = "saved_models"
+
+    for model_name in os.listdir(models_path):
+        model_path = os.path.join(models_path, model_name)
+        if not model_path.endswith(".pth"):
+            continue
+        try:
+            if os.path.exists(model_path):
+                model_data = model_name.split("_")
+                model = UNet(in_channels=3, out_channels=2, depth=int(model_data[1]),
+                             base_filters=int(model_data[3]))
+
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                print("Model " + model_path + " loaded successfully.")
+                model.to(device)
+
+                image_paths = sorted(
+                    [os.path.join(test_image_dir, f) for f in os.listdir(test_image_dir) if
+                     f.lower().endswith('.tif')])
+                mask_paths = sorted(
+                    [os.path.join(test_mask_dir, f) for f in os.listdir(test_mask_dir) if
+                     f.lower().endswith('.tif')])
+
+                n_images_to_show = min(5, len(image_paths))
+                plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256,
+                                              stride=256,
+                                              n_images=n_images_to_show, save_fig=True)
+
+                for test_loader in [loader_128, loader_256]:
+                    try:
+                        plot_predictions(model_name, model, test_loader, device, n_images=3, save_fig=True)
+
+
+                    except Exception as e:
+                        print(f"Error plotting predictions: {e}")
+        except Exception as e:
+            print(f"Error loading model {model_name}: {e}")
 
 
 if __name__ == '__main__':
-    predict_full_image_example()
+    main()
