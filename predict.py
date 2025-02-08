@@ -35,34 +35,77 @@ def count_cells_in_patch(mask, min_area=50):
     return cell_count
 
 
-def plot_predictions(model_name, model, dataloader, device, n_images=5, save_fig=False, min_area=100):
-    model.eval()
-    collected = 0
-    fig, axs = plt.subplots(n_images, 4, figsize=(20, 5 * n_images))
-    plt.suptitle(f"model: {model_name}")
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
 
+
+def plot_predictions(model, dataloader, device, n_images=5, min_area=100, save_fig=False):
+    """
+    Visualize n images from the dataloader. For each image, show:
+      - Original image
+      - Ground truth mask
+      - Predicted mask
+      - Difference map where:
+            * Red pixels indicate extra predictions (false positives)
+            * Blue pixels indicate missed predictions (false negatives)
+      The IoU score is calculated and shown on the difference map.
+
+    Parameters:
+        model: The segmentation model.
+        dataloader: A DataLoader providing (image, mask) pairs.
+        device: torch.device to run predictions on.
+        n_images: Number of images to visualize.
+        min_area: (Unused in this function but can be used for cell filtering elsewhere.)
+        save_fig: If True, save the resulting figure as a PNG file.
+    """
+    model.eval()  # Set model to evaluation mode.
+    collected = 0
+
+    # Create a figure with n_images rows and 4 columns.
+    fig, axs = plt.subplots(n_images, 4, figsize=(20, 5 * n_images))
+
+    # Ensure axs is 2D (if n_images == 1, force it to be a 2D array).
     if n_images == 1:
         axs = np.expand_dims(axs, 0)
 
     with torch.no_grad():
-        for images, masks in dataloader:
-            images = images.to(device)
+        for imgs, masks in dataloader:
+            imgs = imgs.to(device)
             masks = masks.to(device)
-            outputs = model(images)
-            predictions = torch.argmax(outputs, dim=1)
+            outputs = model(imgs)  # Assume raw logits, shape: [B, n_classes, H, W]
+            preds = torch.argmax(outputs, dim=1)  # Predicted mask indices (assumes binary: 0 and 1)
 
-            # Process each image in the batch.
-            batch_size = images.size(0)
+            batch_size = imgs.size(0)
             for i in range(batch_size):
                 if collected >= n_images:
                     break
 
-                orig_img = images[i].cpu().permute(1, 2, 0).numpy()
+                # Get the original image for plotting.
+                orig_img = imgs[i].cpu().permute(1, 2, 0).numpy()
+                # Get ground truth and predicted masks as 2D numpy arrays.
                 true_mask = masks[i].cpu().numpy()
-                pred_mask = predictions[i].cpu().numpy()
-                binary_pred = (pred_mask > 0).astype(np.uint8)
-                cell_count = count_cells_in_patch(binary_pred, min_area=min_area)
-                diff_map = (true_mask != pred_mask).astype(np.uint8)
+                pred_mask = preds[i].cpu().numpy()
+
+                # Compute IoU score:
+                # For binary segmentation, assume 0 = background, 1 = cell.
+                TP = np.sum((true_mask == 1) & (pred_mask == 1))
+                FP = np.sum((true_mask == 0) & (pred_mask == 1))
+                FN = np.sum((true_mask == 1) & (pred_mask == 0))
+                iou = TP / (TP + FP + FN + 1e-6)
+
+                # Create a colored difference map.
+                # Start with a black image.
+                H, W = true_mask.shape
+                diff_color = np.zeros((H, W, 3), dtype=np.uint8)
+                # False positives: predicted cell (1) but ground truth is background (0) --> Red.
+                fp_mask = np.logical_and(true_mask == 0, pred_mask == 1)
+                diff_color[fp_mask] = [255, 0, 0]  # Red.
+                # False negatives: ground truth cell (1) but predicted background (0) --> Blue.
+                fn_mask = np.logical_and(true_mask == 1, pred_mask == 0)
+                diff_color[fn_mask] = [0, 0, 255]  # Blue.
+
+                # Plot the four panels.
                 ax_orig = axs[collected, 0]
                 ax_gt = axs[collected, 1]
                 ax_pred = axs[collected, 2]
@@ -77,13 +120,12 @@ def plot_predictions(model_name, model, dataloader, device, n_images=5, save_fig
                 ax_gt.axis("off")
 
                 ax_pred.imshow(pred_mask, cmap='gray')
-                title = f"Predicted Mask"
-                # title += f"\nCell Count (min_area={min_area}): {cell_count}"
-                ax_pred.set_title(title)
+                ax_pred.set_title("Predicted Mask")
                 ax_pred.axis("off")
 
-                ax_diff.imshow(diff_map, cmap='gray')
-                ax_diff.set_title("Difference Map")
+                # Difference map with IoU score.
+                ax_diff.imshow(diff_color)
+                ax_diff.set_title(f"Diff Map\nIoU: {iou:.3f}")
                 ax_diff.axis("off")
 
                 collected += 1
@@ -93,9 +135,7 @@ def plot_predictions(model_name, model, dataloader, device, n_images=5, save_fig
 
     plt.tight_layout()
     if save_fig:
-        if not os.path.exists("saved_pred"):
-            os.makedirs("saved_pred")
-        plt.savefig(f"saved_pred/predictions_{model_name}.png")
+        plt.savefig("predictions_with_diff.png")
     plt.show()
 
 
@@ -138,8 +178,8 @@ def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
 
 def main():
     # Directories for the test patches.
-    test_patch_image_dir = "data/npm_img"
-    test_patch_mask_dir = "data/npm_mask"
+    test_patch_image_dir = "data/patches_128/test_images"
+    test_patch_mask_dir = "data/patches_128/test_masks"
 
     transform = transforms.Compose([transforms.ToTensor()])
 
@@ -162,10 +202,198 @@ def main():
                 model.load_state_dict(torch.load(model_path, map_location=device))
                 print("Model " + model_path + " loaded successfully.")
                 model.to(device)
-                plot_predictions(model_name, model, test_loader, device, n_images=3, save_fig=True)
+                plot_predictions(model, test_loader, device, n_images=3, save_fig=True)
         except Exception as e:
             print(f"Error loading model {model_name}: {e}")
 
 
+import math
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+
+
+def predict_full_image(model, image, patch_size=256, stride=256, device=None):
+    """
+    Predicts a full segmentation mask for a whole image using a patch-based sliding window approach.
+
+    Parameters:
+      - model: the segmentation model (trained on patches).
+      - image: the full image to segment. Can be a PIL.Image, a NumPy array, or a pre-converted tensor.
+      - patch_size: the size (in pixels) of each square patch.
+      - stride: stride of the sliding window. If stride < patch_size, overlapping patches will be averaged.
+      - device: torch.device on which to run predictions (if None, uses CUDA if available).
+
+    Returns:
+      - predicted_mask: a 2D NumPy array with the predicted class for each pixel.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.eval()
+
+    # Convert input image to a tensor.
+    if isinstance(image, np.ndarray):
+        # Assume image is H x W x C with values [0, 255]
+        img_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    elif isinstance(image, Image.Image):
+        img_tensor = transforms.ToTensor()(image).unsqueeze(0)
+    elif isinstance(image, torch.Tensor):
+        # If already tensor, ensure shape is (1, C, H, W)
+        img_tensor = image if image.ndim == 4 else image.unsqueeze(0)
+    else:
+        raise TypeError("Unsupported image type")
+
+    img_tensor = img_tensor.to(device)
+    _, C, H, W = img_tensor.shape
+
+    # Pad the image so that its dimensions are multiples of patch_size.
+    new_H = math.ceil(H / patch_size) * patch_size
+    new_W = math.ceil(W / patch_size) * patch_size
+    pad_bottom = new_H - H
+    pad_right = new_W - W
+    img_tensor = F.pad(img_tensor, (0, pad_right, 0, pad_bottom), mode='reflect')
+    _, _, H_pad, W_pad = img_tensor.shape
+
+    # Assume model output has n_classes channels.
+    n_classes = 2  # Adjust if needed.
+    output_tensor = torch.zeros((1, n_classes, H_pad, W_pad), device=device)
+    count_tensor = torch.zeros((1, n_classes, H_pad, W_pad), device=device)
+
+    # Slide a window over the padded image.
+    for i in range(0, H_pad, stride):
+        for j in range(0, W_pad, stride):
+            patch = img_tensor[:, :, i:i + patch_size, j:j + patch_size]
+            # Pad patch if it is smaller than patch_size.
+            if patch.shape[2] != patch_size or patch.shape[3] != patch_size:
+                pad_h = patch_size - patch.shape[2]
+                pad_w = patch_size - patch.shape[3]
+                patch = F.pad(patch, (0, pad_w, 0, pad_h), mode='reflect')
+            with torch.no_grad():
+                patch_output = model(patch)  # shape: (1, n_classes, patch_size, patch_size)
+            output_tensor[:, :, i:i + patch_size, j:j + patch_size] += patch_output
+            count_tensor[:, :, i:i + patch_size, j:j + patch_size] += 1
+
+    # Average overlapping predictions.
+    output_tensor /= count_tensor
+
+    # Crop to original size.
+    output_tensor = output_tensor[:, :, :H, :W]
+    predicted_mask = torch.argmax(output_tensor, dim=1).squeeze(0).cpu().numpy()
+
+    return predicted_mask
+
+
+def plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256, stride=256, n_images=5,
+                                  save_fig=False):
+    """
+    For each of the provided full images, predict the segmentation using a sliding window approach,
+    then plot a row with:
+      - Original image
+      - Ground Truth mask
+      - Predicted mask
+      - Colored Difference Map:
+          * Red indicates false positives (extra predictions)
+          * Blue indicates false negatives (missed predictions)
+      The IoU score is calculated and displayed on the difference map.
+
+    Parameters:
+      - model: the segmentation model.
+      - image_paths: list of file paths to full images.
+      - mask_paths: list of file paths to corresponding ground truth masks.
+      - device: torch.device on which to run prediction.
+      - patch_size: size of patches used in sliding window.
+      - stride: stride for sliding window.
+      - n_images: number of images to visualize.
+      - save_fig: if True, the figure is saved as a PNG file.
+    """
+    model.eval()
+
+    # Create a figure with n_images rows and 4 columns.
+    fig, axs = plt.subplots(n_images, 4, figsize=(20, 5 * n_images))
+    if n_images == 1:
+        axs = np.expand_dims(axs, 0)
+
+    for idx in range(n_images):
+        # Load original full image.
+        orig_img = Image.open(image_paths[idx]).convert("RGB")
+        # Load ground truth mask.
+        # Here we assume the ground truth mask is a grayscale image with labels (e.g., 0 and 1).
+        gt_mask = Image.open(mask_paths[idx]).convert("L")
+        gt_mask_np = np.array(gt_mask)
+
+        # Predict the segmentation for the full image.
+        pred_mask = predict_full_image(model, orig_img, patch_size=patch_size, stride=stride, device=device)
+
+        # Compute IoU (for binary segmentation: label 1 is foreground).
+        TP = np.sum((gt_mask_np == 1) & (pred_mask == 1))
+        FP = np.sum((gt_mask_np == 0) & (pred_mask == 1))
+        FN = np.sum((gt_mask_np == 1) & (pred_mask == 0))
+        iou = TP / (TP + FP + FN + 1e-6)
+
+        # Create a colored difference map.
+        H, W = gt_mask_np.shape
+        diff_color = np.zeros((H, W, 3), dtype=np.uint8)
+        # False positives (predicted cell but GT is background): red.
+        fp = np.logical_and(gt_mask_np == 0, pred_mask == 1)
+        diff_color[fp] = [255, 0, 0]
+        # False negatives (GT has cell but prediction is background): blue.
+        fn = np.logical_and(gt_mask_np == 1, pred_mask == 0)
+        diff_color[fn] = [0, 0, 255]
+
+        # Plotting: each row shows Original, GT, Prediction, and Difference Map.
+        ax_orig = axs[idx, 0]
+        ax_gt = axs[idx, 1]
+        ax_pred = axs[idx, 2]
+        ax_diff = axs[idx, 3]
+
+        # Original image.
+        ax_orig.imshow(orig_img)
+        ax_orig.set_title("Original Image")
+        ax_orig.axis("off")
+
+        # Ground Truth Mask.
+        ax_gt.imshow(gt_mask_np, cmap='gray')
+        ax_gt.set_title("Ground Truth Mask")
+        ax_gt.axis("off")
+
+        # Predicted Mask.
+        ax_pred.imshow(pred_mask, cmap='gray')
+        ax_pred.set_title("Predicted Mask")
+        ax_pred.axis("off")
+
+        # Difference Map with IoU score.
+        ax_diff.imshow(diff_color)
+        ax_diff.set_title(f"Difference Map\nIoU: {iou:.3f}")
+        ax_diff.axis("off")
+
+    plt.tight_layout()
+    if save_fig:
+        plt.savefig("full_image_predictions.png")
+    plt.show()
+    model.train()
+
+
+def predict_full_image_example():
+    model = UNet(in_channels=3, out_channels=2, depth=6, base_filters=32)  # example
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.load_state_dict(torch.load("saved_models/d_6_f_32_lr_0.0001.pth", map_location=device))
+
+    test_image_dir = "data/test"
+    test_mask_dir = "data/test_masks"
+    image_paths = sorted(
+        [os.path.join(test_image_dir, f) for f in os.listdir(test_image_dir) if f.lower().endswith('.tif')])
+    mask_paths = sorted(
+        [os.path.join(test_mask_dir, f) for f in os.listdir(test_mask_dir) if f.lower().endswith('.tif')])
+
+    # Visualize predictions for the first n_images.
+    n_images_to_show = min(5, len(image_paths))
+    plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256, stride=256,
+                                  n_images=n_images_to_show, save_fig=False)
+
+
 if __name__ == '__main__':
-    main()
+    predict_full_image_example()

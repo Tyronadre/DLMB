@@ -20,7 +20,7 @@ def main():
                                                min_epochs=model["min_epochs"], train_image_dir="data/patches_128/train_images",
                                                train_mask_dir="data/patches_128/train_masks")
         print(
-            f"Training completed for model with depth {model['Depth']}, filter {model['Filter']}, learning rate {model['learning_rate']}. Loss: {running_loss}")
+            f"Training completed for model with depth {model['depth']}, filter {model['filter']}, learning rate {model['learning_rate']}. Loss: {running_loss}")
 
 
 def plot_loss_curves(loss_file_list):
