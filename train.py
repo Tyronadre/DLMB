@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import random
 
@@ -38,12 +39,14 @@ def extract_patches(image_array, patch_size, stride):
     return patches
 
 
-def save_patches(image_dir, mask_dir, out_image_dir, out_mask_dir, patch_size=(256, 256), stride=(256, 256)):
+def save_patches(image_dir, mask_dir, out_image_dir, out_mask_dir, patch_size=(128, 128), stride=(128, 128)):
     """
     Loop over images and masks in the given directories, extract patches, and save them to disk.
     """
     os.makedirs(out_image_dir, exist_ok=True)
+    os.makedirs(out_image_dir + "/img", exist_ok=True)
     os.makedirs(out_mask_dir, exist_ok=True)
+    os.makedirs(out_mask_dir + "/img", exist_ok=True)
 
     image_paths = sorted(glob.glob(os.path.join(image_dir, "*.tif")))
     mask_paths = sorted(glob.glob(os.path.join(mask_dir, "*.tif")))
@@ -53,6 +56,9 @@ def save_patches(image_dir, mask_dir, out_image_dir, out_mask_dir, patch_size=(2
         # Open images using PIL and convert to numpy arrays.
         img = np.array(Image.open(img_path).convert("RGB"))
         mask = np.array(Image.open(mask_path).convert("L"))  # grayscale
+
+        np.save(out_image_dir + f"/img/img_{patch_id}.npy", img)
+        np.save(out_mask_dir + f"/img/mask_{patch_id}.npy", mask)
 
         # Extract patches
         img_patches = extract_patches(img, patch_size, stride)
@@ -265,7 +271,8 @@ class PatchDataset(Dataset):
         self.mask_files = sorted(glob.glob(os.path.join(mask_patch_dir, "*.npy")))
         self.transform = transform
 
-        assert len(self.image_files) == len(self.mask_files), "Mismatch between image and mask patches"
+        assert len(self.image_files) == len(
+            self.mask_files), f"Mismatch between image and mask patches {len(self.image_files)} != {len(self.mask_files)}"
 
     def __len__(self):
         return len(self.image_files)
@@ -363,41 +370,49 @@ def train_model_with_epoch_predictions(model, train_loader, sample_loader, crite
     return model
 
 
-def train_model(model, train_loader, criterion, optimizer, device, max_loss):
+def train_model(model, train_loader, criterion, optimizer, device, max_loss, min_epochs):
+    """
+    Train the model until at least min_epochs have run and then stop if:
+      - The loss in the current epoch is below max_loss, or
+      - The improvement over the last 5 epochs is less than max_loss.
+
+    Returns the trained model and a NumPy array containing the loss at each epoch.
+    """
     model.to(device)
-    last_5_losses = []
-    stop_training = False
-    loss = 1
+    epoch_losses = []
     epoch = 0
-    while loss > max_loss and not stop_training:
+
+    while True:
         model.train()
         running_loss = 0.0
-
         for imgs, masks in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
-            imgs, masks = imgs.to(device), masks.to(device)
-
+            imgs = imgs.to(device)
+            masks = masks.to(device)
+            optimizer.zero_grad()
             outputs = model(imgs)
             loss = criterion(outputs, masks)
-            running_loss += loss.item() * imgs.size(0)
-
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            loss = running_loss / len(train_loader.dataset)
-
-        last_5_losses.append(loss)
-        progress = 0
-        if len(last_5_losses) > 5:
-            last_5_losses.pop(0)
-            for l in range(4):
-                progress += last_5_losses[l] - last_5_losses[l + 1]
-            if progress < max_loss:
-                stop_training = True
-        print(f"Epoch {epoch + 1}, Loss: {loss:.4f} Progress: {progress:.4f}")
+            running_loss += loss.item() * imgs.size(0)
+        epoch_loss = running_loss / len(train_loader.dataset)
+        epoch_losses.append(epoch_loss)
+        print(f"Epoch {epoch + 1}: Loss = {epoch_loss:.6f}")
         epoch += 1
 
-    return model, loss
+        # Check if we can stop training:
+        if epoch >= min_epochs:
+            # Stop if current loss is already below the absolute threshold.
+            if epoch_loss < max_loss:
+                print("Loss threshold reached and minimum epochs achieved. Stopping training.")
+                break
+            # Or if the improvement over the last 5 epochs is less than max_loss.
+            if len(epoch_losses) >= 5:
+                improvement = epoch_losses[-5] - epoch_losses[-1]
+                if improvement < max_loss:
+                    print("No significant improvement in the last 5 epochs. Stopping training.")
+                    break
+
+    return model, np.array(epoch_losses)
 
 
 ########################################
@@ -405,29 +420,83 @@ def train_model(model, train_loader, criterion, optimizer, device, max_loss):
 ########################################
 
 
-def train_model_with_params(depth, base_filters, learning_rate, max_loss=0.001):
-    transform = transforms.Compose([transforms.ToTensor(), ])
+def train_model_with_params(depth, base_filters, learning_rate, train_image_dir, train_mask_dir,
+                            transform=None, max_loss=0.001, min_epochs=10):
+    """
+    Trains a UNet with the given parameters.
 
-    train_image_dir = "data/patches/train_images"
-    train_mask_dir = "data/patches/train_masks"
+    Parameters:
+      - depth: depth of the UNet.
+      - base_filters: number of base filters in the UNet.
+      - learning_rate: learning rate for the optimizer.
+      - train_image_dir: directory containing training images.
+      - train_mask_dir: directory containing training masks.
+      - transform: optional transform to apply to the images as dict.
+      - max_loss: if the loss is below this value OR if over the last 5 epochs the loss improvement
+                  is less than this value, training stops (after min_epochs have been completed).
+      - min_epochs: the minimum number of epochs to run.
+
+    After training, the function saves:
+      - The model state dictionary (with a unique name if needed).
+      - A NumPy array with the loss for each epoch.
+      - A JSON file with meta-information.
+
+    Returns:
+      - The array of epoch losses.
+    """
+    if transform is None:
+        transform = transforms.Compose([transforms.ToTensor()])
+    else :
+        transform = get_augmentation_transforms(transform)
+
     train_dataset = PatchDataset(train_image_dir, train_mask_dir, transform=transform)
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
     model = UNet(in_channels=3, out_channels=2, depth=depth, base_filters=base_filters)
-
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model, running_loss = train_model(model, train_loader, criterion, optimizer, device, max_loss)
+    model, epoch_losses = train_model(model, train_loader, criterion, optimizer, device, max_loss, min_epochs)
 
-    # Save the final model.
-    model_name = f"d_{depth}_f_{base_filters}_lr_{learning_rate}.pth"
-    os.makedirs("saved_models", exist_ok=True)
-    torch.save(model.state_dict(), "saved_models/" + model_name)
-    print("Model saved to saved_models/" + model_name)
+    save_dir = "saved_models"
+    os.makedirs(save_dir, exist_ok=True)
+    base_name = f"d_{depth}_f_{base_filters}_lr_{learning_rate}"
+    model_filename = base_name + ".pth"
+    final_model_filename = model_filename
+    counter = 1
+    while os.path.exists(os.path.join(save_dir, final_model_filename)):
+        final_model_filename = f"{base_name}_{counter}.pth"
+        counter += 1
 
-    return running_loss
+    # Save the model state.
+    torch.save(model.state_dict(), os.path.join(save_dir, final_model_filename))
+    print("Model saved to", os.path.join(save_dir, final_model_filename))
+
+    # Save the loss array.
+    loss_filename = final_model_filename.replace(".pth", "_loss.npy")
+    np.save(os.path.join(save_dir, loss_filename), epoch_losses)
+    print("Loss array saved to", os.path.join(save_dir, loss_filename))
+
+    # Save the meta data.
+    meta = {
+        "depth": depth,
+        "base_filters": base_filters,
+        "learning_rate": learning_rate,
+        "min_epochs": min_epochs,
+        "max_loss": max_loss,
+        "num_epochs": int(len(epoch_losses)),
+        "final_loss": float(epoch_losses[-1]),
+        "model_filename": final_model_filename,
+        "transform": str(transform),
+    }
+    meta_filename = final_model_filename.replace(".pth", "_meta.json")
+    with open(os.path.join(save_dir, meta_filename), "w") as f:
+        json.dump(meta, f, indent=4)
+    print("Meta data saved to", os.path.join(save_dir, meta_filename))
+
+    return epoch_losses
 
 
 # Assuming PatchDataset and UNet are defined as in the previous examples.
@@ -447,9 +516,29 @@ def main():
     transform = get_augmentation_transforms(aug_config)
     transform = transforms.Compose([transforms.ToTensor(), ])
 
-    train_image_dir = "data/patches/train_images"
-    train_mask_dir = "data/patches/train_masks"
-    train_dataset = PatchDataset(train_image_dir, train_mask_dir, transform=transform)
+    # Directories for original data
+    train_image_dir = "data/train"
+    train_mask_dir = "data/train_masks"
+    test_image_dir = "data/test"
+    test_mask_dir = "data/test_masks"
+
+    # Directories for patchified data (do this only once)
+    train_patch_image_dir = "data/patches_100/train_images"
+    train_patch_mask_dir = "data/patches_100/train_masks"
+    test_patch_image_dir = "data/patches_100/test_images"
+    test_patch_mask_dir = "data/patches_100/test_masks"
+
+    patch_size = (100, 100)
+    stride = (100, 100)
+
+    # if not os.path.exists(train_patch_image_dir):
+    save_patches(train_image_dir, train_mask_dir, train_patch_image_dir, train_patch_mask_dir, patch_size, stride)
+    # if not os.path.exists(test_patch_image_dir):
+    save_patches(test_image_dir, test_mask_dir, test_patch_image_dir, test_patch_mask_dir, patch_size, stride)
+
+    return
+
+    train_dataset = PatchDataset(train_patch_image_dir, train_patch_mask_dir, transform=transform)
     train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
 
     sample_indices = list(range(8))
@@ -457,7 +546,7 @@ def main():
     sample_loader = DataLoader(sample_subset, batch_size=4, shuffle=False)
 
     # Initialize the U-Net model.
-    model = UNet(in_channels=3, out_channels=2, depth=7, base_filters=16)
+    model = UNet(in_channels=3, out_channels=2, depth=3, base_filters=32)
 
     # Loss function and optimizer.
     criterion = nn.CrossEntropyLoss()
@@ -468,13 +557,13 @@ def main():
     print(f"Using device: {device}")
 
     # Train the model, plotting predictions at each epoch.
-    num_epochs = 50
+    num_epochs = 10
     model = train_model_with_epoch_predictions(model, train_loader, sample_loader, criterion, optimizer, device,
                                                num_epochs)
 
     # Save the final model.
     model_name = "3.pth"
-    os.makedirs("saved_models", exist_ok=True)
+    os.makedirs("saved_models_128", exist_ok=True)
     torch.save(model.state_dict(), "saved_models/" + model_name)
     print("Model saved to saved_models/" + model_name)
 

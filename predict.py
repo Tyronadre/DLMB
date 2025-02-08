@@ -137,19 +137,11 @@ def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
 # ---------------------------
 
 def main():
-    train_patch_image_dir = "data/patches/train_images"
-    train_patch_mask_dir = "data/patches/train_masks"
-    # show_sample_patches(train_patch_image_dir, train_patch_mask_dir, num_samples=10)
-
     # Directories for the test patches.
-    test_patch_image_dir = "data/patches/test_images"
-    test_patch_mask_dir = "data/patches/test_masks"
+    test_patch_image_dir = "data/npm_img"
+    test_patch_mask_dir = "data/npm_mask"
 
-    # Define a basic transform (should match what was used in training).
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        # Add normalization if you used it during training.
-    ])
+    transform = transforms.Compose([transforms.ToTensor()])
 
     # Create the test dataset and loader.
     test_dataset = PatchDataset(test_patch_image_dir, test_patch_mask_dir, transform=transform)
@@ -163,14 +155,14 @@ def main():
         model_path = os.path.join(models_path, model_name)
         try:
             if os.path.exists(model_path):
-                if not model_path.__contains__("d_6"): continue
+                # if not model_path.__contains__("d_6"): continue
                 model_data = model_name.split("_")
                 model = UNet(in_channels=3, out_channels=2, depth=int(model_data[1]), base_filters=int(model_data[3]))
 
                 model.load_state_dict(torch.load(model_path, map_location=device))
                 print("Model " + model_path + " loaded successfully.")
                 model.to(device)
-                plot_predictions(model_name, model, test_loader, device, n_images=5, save_fig=True)
+                plot_predictions(model_name, model, test_loader, device, n_images=3, save_fig=True)
         except Exception as e:
             print(f"Error loading model {model_name}: {e}")
 
