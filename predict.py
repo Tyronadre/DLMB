@@ -34,67 +34,54 @@ def count_cells_in_patch(mask, min_area=50):
 
     return cell_count
 
-def plot_predictions(model, dataloader, device, n_images=5, save_fig=False, min_area=100):
-    model.eval()  # Set model to evaluation mode
+
+def plot_predictions(model_name, model, dataloader, device, n_images=5, save_fig=False, min_area=100):
+    model.eval()
     collected = 0
-
-    # Create a figure with n_images rows and 4 columns.
     fig, axs = plt.subplots(n_images, 4, figsize=(20, 5 * n_images))
+    plt.suptitle(f"model: {model_name}")
 
-    # Ensure axs is 2D (if n_images == 1, force it to be a 2D array).
     if n_images == 1:
         axs = np.expand_dims(axs, 0)
 
     with torch.no_grad():
-        for imgs, masks in dataloader:
-            imgs = imgs.to(device)
+        for images, masks in dataloader:
+            images = images.to(device)
             masks = masks.to(device)
-            outputs = model(imgs)  # Raw logits, shape: [B, n_classes, H, W]
-            preds = torch.argmax(outputs, dim=1)  # Predicted mask indices
+            outputs = model(images)
+            predictions = torch.argmax(outputs, dim=1)
 
             # Process each image in the batch.
-            batch_size = imgs.size(0)
+            batch_size = images.size(0)
             for i in range(batch_size):
                 if collected >= n_images:
                     break
 
-                # Convert the original image from (C,H,W) to (H,W,C) for plotting.
-                orig_img = imgs[i].cpu().permute(1, 2, 0).numpy()
-                # Get ground truth and predicted masks as numpy arrays.
+                orig_img = images[i].cpu().permute(1, 2, 0).numpy()
                 true_mask = masks[i].cpu().numpy()
-                pred_mask = preds[i].cpu().numpy()
-
-                # Create a binary mask from the predicted mask.
-                # Adjust the threshold or condition if you have multi-class values.
+                pred_mask = predictions[i].cpu().numpy()
                 binary_pred = (pred_mask > 0).astype(np.uint8)
                 cell_count = count_cells_in_patch(binary_pred, min_area=min_area)
-
-                # Compute the difference map (1 indicates a disagreement).
                 diff_map = (true_mask != pred_mask).astype(np.uint8)
-
-                # Plot the four panels.
                 ax_orig = axs[collected, 0]
                 ax_gt = axs[collected, 1]
                 ax_pred = axs[collected, 2]
                 ax_diff = axs[collected, 3]
 
-                # Original image.
                 ax_orig.imshow(orig_img)
                 ax_orig.set_title("Original Image")
                 ax_orig.axis("off")
 
-                # Ground truth mask (grayscale).
                 ax_gt.imshow(true_mask, cmap='gray')
                 ax_gt.set_title("Ground Truth Mask")
                 ax_gt.axis("off")
 
-                # Predicted mask with cell count.
                 ax_pred.imshow(pred_mask, cmap='gray')
-                title = f"Predicted Mask\nCell Count (min_area={min_area}): {cell_count}"
+                title = f"Predicted Mask"
+                # title += f"\nCell Count (min_area={min_area}): {cell_count}"
                 ax_pred.set_title(title)
                 ax_pred.axis("off")
 
-                # Difference map.
                 ax_diff.imshow(diff_map, cmap='gray')
                 ax_diff.set_title("Difference Map")
                 ax_diff.axis("off")
@@ -106,8 +93,11 @@ def plot_predictions(model, dataloader, device, n_images=5, save_fig=False, min_
 
     plt.tight_layout()
     if save_fig:
-        plt.savefig("predictions_with_cell_counts.png")
+        if not os.path.exists("saved_pred"):
+            os.makedirs("saved_pred")
+        plt.savefig(f"saved_pred/predictions_{model_name}.png")
     plt.show()
+
 
 def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
     """
@@ -141,6 +131,7 @@ def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
     plt.tight_layout()
     plt.show()
 
+
 # ---------------------------
 # Main Execution for Prediction Plotting
 # ---------------------------
@@ -149,7 +140,6 @@ def main():
     train_patch_image_dir = "data/patches/train_images"
     train_patch_mask_dir = "data/patches/train_masks"
     # show_sample_patches(train_patch_image_dir, train_patch_mask_dir, num_samples=10)
-
 
     # Directories for the test patches.
     test_patch_image_dir = "data/patches/test_images"
@@ -163,22 +153,26 @@ def main():
 
     # Create the test dataset and loader.
     test_dataset = PatchDataset(test_patch_image_dir, test_patch_mask_dir, transform=transform)
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
 
     # Set device and load the saved model.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(in_channels=3, out_channels=2, depth=7, base_filters=16)
-    model_path = "saved_models/3.pth"
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        print("Model " + model_path + " loaded successfully.")
-    else:
-        print(f"Model path {model_path} does not exist.")
-        return
+    models_path = "saved_models"
 
-    model.to(device)
+    for model_name in os.listdir(models_path):
+        model_path = os.path.join(models_path, model_name)
+        try:
+            if os.path.exists(model_path):
+                if not model_path.__contains__("d_6"): continue
+                model_data = model_name.split("_")
+                model = UNet(in_channels=3, out_channels=2, depth=int(model_data[1]), base_filters=int(model_data[3]))
 
-    plot_predictions(model, test_loader, device, n_images=9, save_fig=True)
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                print("Model " + model_path + " loaded successfully.")
+                model.to(device)
+                plot_predictions(model_name, model, test_loader, device, n_images=5, save_fig=True)
+        except Exception as e:
+            print(f"Error loading model {model_name}: {e}")
 
 
 if __name__ == '__main__':

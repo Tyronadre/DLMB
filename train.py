@@ -405,7 +405,7 @@ def train_model(model, train_loader, criterion, optimizer, device, max_loss):
 ########################################
 
 
-def train_model_with_params(depth, base_filters, learning_rate, max_loss=0.01):
+def train_model_with_params(depth, base_filters, learning_rate, max_loss=0.001):
     transform = transforms.Compose([transforms.ToTensor(), ])
 
     train_image_dir = "data/patches/train_images"
