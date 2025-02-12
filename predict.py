@@ -36,7 +36,7 @@ def count_cells_in_patch(mask, min_area=50):
     return cell_count
 
 
-def plot_predictions(model_name, model, dataloader, device, n_images=5, min_area=100, save_fig=False):
+def plot_predictions(model_name, model, data_name, dataloader, device, n_images=5, min_area=100, save_fig=True, plt_show=False):
     """
     Visualize n images from the dataloader. For each image, show:
       - Original image
@@ -130,11 +130,14 @@ def plot_predictions(model_name, model, dataloader, device, n_images=5, min_area
                 break
 
     plt.tight_layout()
-    if save_fig:
-        plt.savefig("predictions_with_diff.png")
+
     # set the title of the plot with the size of the patches
     plt.suptitle("Image Segmentation Predictions " + model_name + ". Size: " + str(H) + "x" + str(W))
-    plt.show()
+    if save_fig:
+        os.makedirs("predictions",exist_ok=True)
+        plt.savefig(f"predictions/{model_name}_predictions_with_diff_{data_name}.png")
+    if plt_show:
+        plt.show()
 
 
 def show_sample_patches(image_patch_dir, mask_patch_dir, num_samples=6):
@@ -241,8 +244,8 @@ def predict_full_image(model, image, patch_size=256, stride=256, device=None):
     return predicted_mask
 
 
-def plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256, stride=256, n_images=5,
-                                  save_fig=False):
+def plot_full_image_predictions_n(model_name, model, image_paths, mask_paths, device, patch_size=256, stride=256, n_images=5,
+                                  save_fig=True, plt_show=False):
     """
     For each of the provided full images, predict the segmentation using a sliding window approach,
     then plot a row with:
@@ -325,37 +328,39 @@ def plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_
         ax_diff.axis("off")
 
     plt.tight_layout()
-    if save_fig:
-        plt.savefig("full_image_predictions.png")
+
 
     plt.suptitle("Full Image Predictions")
-    plt.show()
-    model.train()
+
+    if save_fig:
+        os.makedirs("predictions",exist_ok=True)
+        plt.savefig(f"predictions/{model_name}_full_image_predictions.png")
+    if plt_show:
+        plt.show()
 
 
 def main():
     # Directories for the test patches.
-    test_image_dir = "data/test"
-    test_mask_dir = "data/test_masks"
-    patch_100_image = "data/patches_100/test_images"
-    patch_100_mask = "data/patches_100/test_masks"
-    patch_128_image = "data/patches_128/test_images"
-    patch_128_mask = "data/patches_128/test_masks"
-    patch_256_image = "data/patches_256/test_images"
-    patch_256_mask = "data/patches_256/test_masks"
+    test_image_dir = "E:/data/test"
+    test_mask_dir = "E:/data/test_masks"
+    patch_100_image = "E:/data/patches_100/test_images"
+    patch_100_mask = "E:/data/patches_100/test_masks"
+    patch_128_image = "E:/data/patches_128/test_images"
+    patch_128_mask = "E:/data/patches_128/test_masks"
+    patch_256_image = "E:/data/patches_256/test_images"
+    patch_256_mask = "E:/data/patches_256/test_masks"
 
     transform = transforms.Compose([transforms.ToTensor()])
+    print("creating dataloader")
 
     # Create the test dataset and loader.
-    loader_100 = DataLoader(PatchDataset(patch_100_image, patch_100_mask, transform=transform), batch_size=4,
-                            shuffle=False)
     loader_128 = DataLoader(PatchDataset(patch_128_image, patch_128_mask, transform=transform), batch_size=4,
                             shuffle=False)
     loader_256 = DataLoader(PatchDataset(patch_256_image, patch_256_mask, transform=transform), batch_size=4,
                             shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models_path = "saved_models"
+    models_path = "E:\\ai_models"
 
     for model_name in os.listdir(models_path):
         model_path = os.path.join(models_path, model_name)
@@ -379,13 +384,15 @@ def main():
                      f.lower().endswith('.tif')])
 
                 n_images_to_show = min(5, len(image_paths))
-                plot_full_image_predictions_n(model, image_paths, mask_paths, device, patch_size=256,
+                print("Predicting full Image")
+                plot_full_image_predictions_n(model_name, model, image_paths, mask_paths, device, patch_size=256,
                                               stride=256,
                                               n_images=n_images_to_show, save_fig=True)
 
-                for test_loader in [loader_128, loader_256]:
+                for data_name, test_loader in {"patch-128": loader_128, "patch-256": loader_256}.items():
                     try:
-                        plot_predictions(model_name, model, test_loader, device, n_images=3, save_fig=True)
+                        print(f"Predicting {data_name}")
+                        plot_predictions(model_name, model, data_name, test_loader, device, n_images=3, save_fig=True)
 
 
                     except Exception as e:
