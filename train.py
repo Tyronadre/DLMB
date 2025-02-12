@@ -131,7 +131,7 @@ class ColorJitterPair:
         return self.jitter(image), mask
 
 
-def get_augmentation_transforms(config):
+def get_augmentation_transforms(config: dict):
     """
     Build a ComposePair transform from a configuration dictionary.
 
@@ -148,23 +148,19 @@ def get_augmentation_transforms(config):
           }
       }
     """
-    transforms_list = []
+    transforms_list = [transforms.ToTensor()]
 
-    if config.get('hflip', 0) > 0:
+    if 'hflip' in config and config.get('hflip', 0) > 0:
         transforms_list.append(RandomHorizontalFlipPair(p=config['hflip']))
-    if config.get('vflip', 0) > 0:
+    if 'vflip' in config and config.get('vflip', 0) > 0:
         transforms_list.append(RandomVerticalFlipPair(p=config['vflip']))
-    if config.get('rotation', 0) > 0:
+    if 'rotation' in config and config.get('rotation', 0) > 0:
         transforms_list.append(RandomRotationPair(degrees=config['rotation']))
-    if config.get('color_jitter', None):
+    if 'color_jitter' in config and config.get('color_jitter', None):
         jitter_params = config['color_jitter']
         transforms_list.append(ColorJitterPair(**jitter_params))
 
-    if transforms_list:
-        return ComposePair(transforms_list)
-    else:
-        # If no augmentation is selected, return identity.
-        return lambda image, mask: (image, mask)
+    return transforms.Compose(transforms_list)
 
 
 ########################################
@@ -446,7 +442,7 @@ def train_model_with_params(depth, base_filters, learning_rate, train_image_dir,
     """
     if transform is None:
         transform = transforms.Compose([transforms.ToTensor()])
-    else :
+    else:
         transform = get_augmentation_transforms(transform)
 
     train_dataset = PatchDataset(train_image_dir, train_mask_dir, transform=transform)
@@ -489,6 +485,7 @@ def train_model_with_params(depth, base_filters, learning_rate, train_image_dir,
         "train_image_dir": train_image_dir,
         "train_mask_dir": train_mask_dir,
         "num_epochs": int(len(epoch_losses)),
+        "epoch_losses": epoch_losses.tolist(),
         "final_loss": float(epoch_losses[-1]),
         "model_filename": final_model_filename,
         "transform": str(transform),
@@ -500,8 +497,6 @@ def train_model_with_params(depth, base_filters, learning_rate, train_image_dir,
 
     return epoch_losses
 
-
-# Assuming PatchDataset and UNet are defined as in the previous examples.
 
 def main():
     aug_config = {
@@ -515,60 +510,19 @@ def main():
         #     'hue': 0.1
         # }
     }
-    transform = get_augmentation_transforms(aug_config)
-    transform = transforms.Compose([transforms.ToTensor(), ])
 
-    # Directories for original data
-    train_image_dir = "data/train"
-    train_mask_dir = "data/train_masks"
-    test_image_dir = "data/test"
-    test_mask_dir = "data/test_masks"
+    train_patch_image_dir = "data/patches_128/train_images"
+    train_patch_mask_dir = "data/patches_128/train_masks"
 
-    # Directories for patchified data (do this only once)
-    train_patch_image_dir = "data/patches_100/train_images"
-    train_patch_mask_dir = "data/patches_100/train_masks"
-    test_patch_image_dir = "data/patches_100/test_images"
-    test_patch_mask_dir = "data/patches_100/test_masks"
 
-    patch_size = (100, 100)
-    stride = (100, 100)
+    model = train_model_with_params(3, 32, 1e-4, train_patch_image_dir, train_patch_mask_dir, aug_config, max_loss=0.5, min_epochs=5)
 
-    # if not os.path.exists(train_patch_image_dir):
-    save_patches(train_image_dir, train_mask_dir, train_patch_image_dir, train_patch_mask_dir, patch_size, stride)
-    # if not os.path.exists(test_patch_image_dir):
-    save_patches(test_image_dir, test_mask_dir, test_patch_image_dir, test_patch_mask_dir, patch_size, stride)
-
-    return
-
-    train_dataset = PatchDataset(train_patch_image_dir, train_patch_mask_dir, transform=transform)
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-
-    sample_indices = list(range(8))
-    sample_subset = torch.utils.data.Subset(train_dataset, sample_indices)
-    sample_loader = DataLoader(sample_subset, batch_size=4, shuffle=False)
-
-    # Initialize the U-Net model.
-    model = UNet(in_channels=3, out_channels=2, depth=3, base_filters=32)
-
-    # Loss function and optimizer.
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # device = torch.device("cpu")
-    print(f"Using device: {device}")
-
-    # Train the model, plotting predictions at each epoch.
-    num_epochs = 10
-    model = train_model_with_epoch_predictions(model, train_loader, sample_loader, criterion, optimizer, device,
-                                               num_epochs)
-
-    # Save the final model.
-    model_name = "3.pth"
-    os.makedirs("saved_models_128", exist_ok=True)
-    torch.save(model.state_dict(), "saved_models/" + model_name)
+    model_name = "4.pth"
+    os.makedirs("saved_models", exist_ok=True)
+    torch.save(model, "saved_models/" + model_name)
     print("Model saved to saved_models/" + model_name)
 
 
 if __name__ == '__main__':
+    # save_patches("data/train", "data/train_masks", "data/patches_256/train_images", "data/patches_256/train_masks", (256,256),(256,256))
     main()
